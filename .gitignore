@@ -1,2 +1,46 @@
+# local project tooling
+.atl/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# env variables and secrets
+.env
+.env.*
+!.env.example
+
+# local cluster configuration
+configs/hosts_cluster.txt
+
+# hadoop and spark runtime data
+hadoop-data/
+logs/
+work/
+tmp/
+.sparkStaging/
+metastore_db/
+derby.log
+*.log
+
+# large datasets and generated outputs
+datasets/raw/
+datasets/processed/
+*.parquet
+*.avro
+*.orc
+
+# installers and archives
+*.tar.gz
+*.tgz
+
+# network captures
+captures/*.pcap
+captures/*.pcapng
+
+# Operating systems
+.DS_Store
+Thumbs.db
 imgs/
-.atl
