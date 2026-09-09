@@ -13,6 +13,7 @@ EXPECTED_TEAMS = ("edgar", "luis", "fercho", "isaac", "caleb", "michelle")
 FORMATS = {"nested_zip_csv", "gzip_csv", "bzip2_libsvm"}
 STRATEGIES = {
     "connected_components",
+    "source_blocks",
     "duplicate_groups",
     "tail_test_stratified_validation",
     "official_test_stratified_validation",
@@ -22,6 +23,7 @@ DATASET_KEYS = {"format", "sources", "output_dir", "split", "tiers", "schema"}
 SOURCE_KEYS = {"path", "partition", "expected_rows"}
 SCHEMA_KEYS = {"feature_count", "label_position", "labels", "columns", "block_count"}
 RATIO_KEYS = {"strategy", "train_ratio", "validation_ratio", "internal_test_ratio"}
+BLOCK_KEYS = {"strategy", "train_blocks", "validation_blocks", "internal_test_blocks"}
 SIZE_KEYS = {"strategy", "development_rows", "validation_size", "official_test_size"}
 VALIDATION_KEYS = {"strategy", "validation_size"}
 
@@ -104,7 +106,10 @@ def _validate_split(value: Any, location: str) -> dict[str, int | float | str]:
     strategy = data.get("strategy")
     if strategy not in STRATEGIES:
         raise ValueError(f"{location}.strategy is unsupported: {strategy!r}")
-    expected = RATIO_KEYS if strategy in {"connected_components", "duplicate_groups"} else SIZE_KEYS
+    if strategy == "source_blocks":
+        expected = BLOCK_KEYS
+    else:
+        expected = RATIO_KEYS if strategy in {"connected_components", "duplicate_groups"} else SIZE_KEYS
     if strategy == "official_test_stratified_validation":
         expected = VALIDATION_KEYS
     _exact_keys(data, expected, location)
@@ -114,6 +119,15 @@ def _validate_split(value: Any, location: str) -> dict[str, int | float | str]:
             raise ValueError(f"{location} ratios must be positive numbers")
         if abs(sum(ratios) - 1.0) > 1e-12:
             raise ValueError(f"{location} ratios must sum to 1")
+    elif expected == BLOCK_KEYS:
+        block_sets = []
+        for key in ("train_blocks", "validation_blocks", "internal_test_blocks"):
+            blocks = data[key]
+            if not isinstance(blocks, list) or not blocks or not all(isinstance(item, str) and item for item in blocks):
+                raise ValueError(f"{location}.{key} must be a non-empty string list")
+            block_sets.append(set(blocks))
+        if any(left & right for index, left in enumerate(block_sets) for right in block_sets[index + 1:]):
+            raise ValueError(f"{location} block assignments must not overlap")
     else:
         for key in expected - {"strategy"}:
             _positive_int(data[key], f"{location}.{key}")

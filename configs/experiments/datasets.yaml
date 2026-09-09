@@ -10,10 +10,10 @@ datasets:
         expected_rows: null
     output_dir: datasets/processed/rlcp
     split:
-      strategy: connected_components
-      train_ratio: 0.70
-      validation_ratio: 0.15
-      internal_test_ratio: 0.15
+      strategy: source_blocks
+      train_blocks: [block_1.zip, block_2.zip, block_3.zip, block_4.zip, block_5.zip, block_6.zip, block_7.zip, block_8.zip]
+      validation_blocks: [block_9.zip]
+      internal_test_blocks: [block_10.zip]
     tiers: [100000, 500000, 1000000]
     schema:
       feature_count: 10

@@ -47,6 +47,7 @@ class NativeRow:
     source_label: str
     logical_label: str
     group_key: str | None = None
+    source_partition: str | None = None
 
 
 class DisjointSet:
@@ -168,16 +169,16 @@ def _epsilon_rows(config: DatasetConfig, root: Path) -> Iterator[NativeRow]:
                     raise ValueError(f"{path}:{count}: expected {config.feature_count} LIBSVM features")
                 source_label = tokens[0]
                 logical = _logical_label(source_label, config)
-                for expected_index, token in enumerate(tokens[1:], 1):
-                    try:
-                        index_text, value_text = token.split(":", 1)
-                        value = float(value_text)
-                    except (ValueError, TypeError) as error:
-                        raise ValueError(f"{path}:{count}: invalid LIBSVM token {token!r}") from error
-                    if int(index_text) != expected_index or not math.isfinite(value):
-                        raise ValueError(f"{path}:{count}: invalid LIBSVM feature {token!r}")
                 observation_id = f"{source.partition}:{count}"
-                yield NativeRow(global_ordinal, observation_id, line, source_label, logical, source.partition)
+                yield NativeRow(
+                    global_ordinal,
+                    observation_id,
+                    line,
+                    source_label,
+                    logical,
+                    source.partition,
+                    source.partition,
+                )
         if source.expected_rows is not None and count != source.expected_rows:
             raise ValueError(f"{path}: expected {source.expected_rows} rows, found {count}")
 
@@ -214,7 +215,15 @@ def _rlcp_rows(config: DatasetConfig, root: Path) -> Iterator[NativeRow]:
                         logical = _logical_label(source_label, config)
                         row_id = f"{path.name}:{block_name}:{csv_members[0].filename}:{block_ordinal}"
                         group = f"left:{fields[0]}\0right:{fields[1]}"
-                        yield NativeRow(ordinal, row_id, ",".join(fields), source_label, logical, group)
+                        yield NativeRow(
+                            ordinal,
+                            row_id,
+                            ",".join(fields),
+                            source_label,
+                            logical,
+                            group,
+                            block_name,
+                        )
 
 
 def _rows(config: DatasetConfig, root: Path) -> Iterator[NativeRow]:
@@ -297,21 +306,110 @@ def _seeded_rank(seed: int, namespace: str, value: int) -> int:
     return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big")
 
 
-def _grouped_splits(groups: np.ndarray, config: DatasetConfig, seed: int) -> tuple[np.ndarray, dict[str, int]]:
-    """Assign complete groups greedily toward requested row ratios."""
+def _grouped_splits(
+    groups: np.ndarray,
+    labels: np.ndarray,
+    config: DatasetConfig,
+    seed: int,
+) -> tuple[np.ndarray, dict[str, int], dict[str, object]]:
+    """Assign complete groups toward row and binary-class targets."""
     unique, counts = np.unique(groups, return_counts=True)
     ratios = np.array([config.split["train_ratio"], config.split["validation_ratio"], config.split["internal_test_ratio"]])
     targets = ratios * len(groups)
+    label_count = int(labels.max()) + 1
+    group_labels = np.bincount(
+        groups.astype(np.int64) * label_count + labels.astype(np.int64),
+        minlength=(int(unique.max()) + 1) * label_count,
+    ).reshape(-1, label_count)[unique]
+    class_targets = np.outer(ratios, group_labels.sum(axis=0))
     actual = np.zeros(3, dtype=np.int64)
+    actual_labels = np.zeros_like(class_targets)
     group_split = np.zeros(int(unique.max()) + 1, dtype=np.uint8)
-    order = sorted(range(len(unique)), key=lambda index: _seeded_rank(seed, config.name, int(unique[index])))
+    order = sorted(
+        range(len(unique)),
+        key=lambda index: (-int(counts[index]), _seeded_rank(seed, config.name, int(unique[index]))),
+    )
     for index in order:
-        deficits = targets - actual
-        split = int(np.argmax(deficits))
+        scores = []
+        for split_index in range(3):
+            candidate_rows = actual.copy()
+            candidate_labels = actual_labels.copy()
+            candidate_rows[split_index] += counts[index]
+            candidate_labels[split_index] += group_labels[index]
+            row_error = np.sum(((candidate_rows - targets) / max(len(groups), 1)) ** 2)
+            class_error = np.sum(
+                ((candidate_labels - class_targets) / np.maximum(class_targets, 1)) ** 2
+            )
+            scores.append((float(row_error + class_error), split_index))
+        split = min(scores)[1]
         group_split[int(unique[index])] = split
         actual[split] += int(counts[index])
+        actual_labels[split] += group_labels[index]
     memberships = group_split[groups]
-    return memberships, {SPLIT_NAMES[index]: int(value) for index, value in enumerate(actual)}
+    diagnostics = {
+        "largest_group_rows": int(counts.max()),
+        "split_class_counts": {
+            SPLIT_NAMES[index]: {str(code): int(value) for code, value in enumerate(actual_labels[index])}
+            for index in range(3)
+        },
+    }
+    return memberships, {SPLIT_NAMES[index]: int(value) for index, value in enumerate(actual)}, diagnostics
+
+
+def _source_block_splits(
+    rows: Iterator[NativeRow], config: DatasetConfig
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Assign RLCP rows to the configured source blocks."""
+    block_to_split = {
+        block: split
+        for split, key in (
+            (SPLIT_TRAIN, "train_blocks"),
+            (SPLIT_VALIDATION, "validation_blocks"),
+            (SPLIT_INTERNAL_TEST, "internal_test_blocks"),
+        )
+        for block in config.split[key]
+    }
+    memberships = []
+    for row in rows:
+        if row.source_partition not in block_to_split:
+            raise ValueError(f"rlcp: source block is not assigned: {row.source_partition!r}")
+        memberships.append(block_to_split[row.source_partition])
+    values = np.asarray(memberships, dtype=np.uint8)
+    counts = Counter(SPLIT_NAMES[int(value)] for value in values)
+    return values, dict(counts)
+
+
+def _source_block_overlap(
+    config: DatasetConfig,
+    root: Path,
+    split_by_block: dict[str, int],
+    work: Path,
+) -> dict[str, int]:
+    """Count typed RLCP entity IDs shared across configured source splits."""
+    database = sqlite3.connect(work / "entity_overlap.sqlite3")
+    database.execute("CREATE TABLE entities (entity TEXT PRIMARY KEY, mask INTEGER NOT NULL)")
+    try:
+        for row in _rows(config, root):
+            split = split_by_block[row.source_partition]
+            left, right = row.group_key.split("\0", 1)
+            for entity in (left, right):
+                database.execute(
+                    "INSERT INTO entities(entity, mask) VALUES (?, ?) "
+                    "ON CONFLICT(entity) DO UPDATE SET mask = mask | excluded.mask",
+                    (entity, 1 << split),
+                )
+        database.commit()
+        masks = Counter()
+        for (mask,) in database.execute("SELECT mask FROM entities"):
+            if mask & 1 and mask & 2:
+                masks["train_validation"] += 1
+            if mask & 1 and mask & 4:
+                masks["train_internal_test"] += 1
+            if mask & 2 and mask & 4:
+                masks["validation_internal_test"] += 1
+        return dict(masks)
+    finally:
+        database.close()
 
 
 def _quota(counts: np.ndarray, requested: int) -> np.ndarray:
@@ -480,12 +578,25 @@ def prepare_dataset(config: ExperimentsConfig, dataset_name: str, root: Path = P
     logger.info("Preparing %s with random_state=%d", dataset_name, config.random_state)
     try:
         labels, label_names = _label_scan(dataset, root, work)
-        if dataset.split_strategy == "connected_components":
+        split_diagnostics: dict[str, object] = {}
+        if dataset.split_strategy == "source_blocks":
+            memberships, actual_splits = _source_block_splits(_rows(dataset, root), dataset)
+            split_by_block = {
+                block: split
+                for split, key in (
+                    (SPLIT_TRAIN, "train_blocks"),
+                    (SPLIT_VALIDATION, "validation_blocks"),
+                    (SPLIT_INTERNAL_TEST, "internal_test_blocks"),
+                )
+                for block in dataset.split[key]
+            }
+            split_diagnostics["entity_overlap_counts"] = _source_block_overlap(dataset, root, split_by_block, work)
+        elif dataset.split_strategy == "connected_components":
             groups = _group_ids_rlcp(dataset, root, work)
-            memberships, actual_splits = _grouped_splits(groups, dataset, config.random_state)
+            memberships, actual_splits, split_diagnostics = _grouped_splits(groups, labels, dataset, config.random_state)
         elif dataset.split_strategy == "duplicate_groups":
             groups = _group_ids_kdd(dataset, root, work)
-            memberships, actual_splits = _grouped_splits(groups, dataset, config.random_state)
+            memberships, actual_splits, split_diagnostics = _grouped_splits(groups, labels, dataset, config.random_state)
         elif dataset.split_strategy in {"tail_test_stratified_validation", "official_test_stratified_validation"}:
             memberships, actual_splits = _fixed_splits(dataset, labels, config.random_state)
         else:
@@ -493,7 +604,11 @@ def prepare_dataset(config: ExperimentsConfig, dataset_name: str, root: Path = P
         if len(memberships) != len(labels):
             raise ValueError(f"{dataset.name}: membership length mismatch")
         required_splits = {SPLIT_TRAIN, SPLIT_VALIDATION}
-        required_splits.add(SPLIT_INTERNAL_TEST if dataset.split_strategy in {"connected_components", "duplicate_groups"} else SPLIT_OFFICIAL_TEST)
+        required_splits.add(
+            SPLIT_INTERNAL_TEST
+            if dataset.split_strategy in {"connected_components", "source_blocks", "duplicate_groups"}
+            else SPLIT_OFFICIAL_TEST
+        )
         if any(not np.any(memberships == split) for split in required_splits):
             raise ValueError(f"{dataset.name}: split strategy produced an empty required split")
         train = memberships == SPLIT_TRAIN
@@ -522,6 +637,7 @@ def prepare_dataset(config: ExperimentsConfig, dataset_name: str, root: Path = P
                 "unique_observation_ids": True,
             },
             "group_ratio_deviation_rows": _ratio_deviations(dataset, actual_splits, len(labels)),
+            "split_diagnostics": split_diagnostics,
             "elapsed_seconds": time.monotonic() - start,
             "peak_rss_mib": _peak_rss_mib(),
         }

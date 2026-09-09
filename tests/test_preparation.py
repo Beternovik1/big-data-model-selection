@@ -78,6 +78,20 @@ def _write_rlcp(path: Path, rows: list[list[str]], *, unsafe: bool = False) -> N
         outer.writestr("block_1.zip", nested_buffer.getvalue())
 
 
+def _write_rlcp_blocks(path: Path, blocks: dict[int, list[list[str]]]) -> None:
+    """Create an RLCP fixture with the configured source-block layout."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as outer:
+        for block_number, rows in blocks.items():
+            nested_buffer = io.BytesIO()
+            with zipfile.ZipFile(nested_buffer, "w", zipfile.ZIP_DEFLATED) as nested:
+                content = io.StringIO()
+                writer = csv.writer(content, lineterminator="\n")
+                writer.writerow(RLCP_COLUMNS)
+                writer.writerows(rows)
+                nested.writestr(f"block_{block_number}.csv", content.getvalue())
+            outer.writestr(f"block_{block_number}.zip", nested_buffer.getvalue())
+
+
 def test_prepare_dataset_rlcp_keeps_connected_entities_together(tmp_path: Path) -> None:
     """Typed bipartite connected components must never cross evaluations."""
     raw = tmp_path / "rlcp.zip"
@@ -104,6 +118,32 @@ def test_prepare_dataset_rlcp_keeps_connected_entities_together(tmp_path: Path) 
     assert json.loads((output / "metadata.json").read_text())["group_ratio_deviation_rows"] is not None
 
 
+def test_prepare_dataset_rlcp_source_blocks_reports_entity_overlap(tmp_path: Path) -> None:
+    """Source-block evaluation must report, rather than hide, entity overlap."""
+    raw = tmp_path / "rlcp.zip"
+    rows = lambda left, right, label: [left, right, "1", "", "1", "", "1", "1", "1", "1", "1", label]
+    _write_rlcp_blocks(raw, {1: [rows("L1", "R1", "TRUE")], 2: [rows("L1", "R2", "FALSE")], 3: [rows("L3", "R3", "FALSE")]})
+    config = _dataset(
+        "rlcp",
+        "nested_zip_csv",
+        (SourceConfig(Path("rlcp.zip"), "all", None),),
+        "source_blocks",
+        {"strategy": "source_blocks", "train_blocks": ["block_1.zip"], "validation_blocks": ["block_2.zip"], "internal_test_blocks": ["block_3.zip"]},
+        (1,),
+        10,
+        {"TRUE": "TRUE", "FALSE": "FALSE"},
+        "last",
+        RLCP_COLUMNS,
+        3,
+    )
+
+    output = prepare_dataset(_experiment(config), "rlcp", tmp_path)
+
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["actual_splits"] == {"train": 1, "validation": 1, "internal_test": 1}
+    assert metadata["split_diagnostics"]["entity_overlap_counts"] == {"train_validation": 1}
+
+
 def test_prepare_dataset_kdd_groups_exact_duplicates_and_maps_binary_labels(tmp_path: Path) -> None:
     """Exact duplicate KDD records must share a split and retain source labels."""
     raw = tmp_path / "kdd.gz"
@@ -124,6 +164,8 @@ def test_prepare_dataset_kdd_groups_exact_duplicates_and_maps_binary_labels(tmp_
     assert labels == {"normal", "attack"}
     source_labels = {label for counts in metadata["source_class_counts"].values() for label in counts}
     assert source_labels == {"normal.", "smurf."}
+    assert metadata["split_diagnostics"]["largest_group_rows"] == 2
+    assert set(metadata["split_diagnostics"]["split_class_counts"]) == {"train", "validation", "internal_test"}
     split_lines = {}
     for split in ("train", "validation", "internal_test"):
         for line in (output / f"{split}.csv").read_text().splitlines():
@@ -157,7 +199,9 @@ def test_prepare_dataset_epsilon_preserves_official_test_and_source_labels(tmp_p
     train = tmp_path / "epsilon.bz2"
     test = tmp_path / "epsilon.t.bz2"
     with bz2.open(train, "wt", encoding="utf-8") as stream:
-        stream.write("\n".join(_epsilon_line("1" if index % 2 else "-1", index) for index in range(16)) + "\n")
+        lines = [_epsilon_line("1" if index % 2 else "-1", index) for index in range(16)]
+        lines[0] = lines[0].replace("1:1.0", "1:not-a-number")
+        stream.write("\n".join(lines) + "\n")
     with bz2.open(test, "wt", encoding="utf-8") as stream:
         stream.write("\n".join(_epsilon_line("1" if index % 2 else "-1", index + 20) for index in range(4)) + "\n")
     sources = (SourceConfig(Path("epsilon.bz2"), "official_train", 16), SourceConfig(Path("epsilon.t.bz2"), "official_test", 4))

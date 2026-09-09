@@ -16,7 +16,7 @@ def test_load_config_authoritative_contract_returns_typed_config() -> None:
 
     assert config.random_state == 42
     assert config.team_ids == ("edgar", "luis", "fercho", "isaac", "caleb", "michelle")
-    assert config.datasets["rlcp"].split_strategy == "connected_components"
+    assert config.datasets["rlcp"].split_strategy == "source_blocks"
     assert config.datasets["kdd"].split_strategy == "duplicate_groups"
     assert config.datasets["higgs"].split["official_test_size"] == 500_000
     assert config.datasets["epsilon"].labels == {"1": "1", "-1": "-1"}
@@ -61,4 +61,15 @@ def test_load_config_invalid_split_ratio_raises_value_error(tmp_path: Path) -> N
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
     with pytest.raises(ValueError, match="ratios must sum to 1"):
+        load_config(path)
+
+
+def test_load_config_overlapping_source_blocks_raises_value_error(tmp_path: Path) -> None:
+    """Source-block partitions must be explicit and disjoint."""
+    data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    data["datasets"]["rlcp"]["split"]["validation_blocks"] = ["block_8.zip"]
+    path = tmp_path / "overlapping-blocks.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="block assignments must not overlap"):
         load_config(path)
