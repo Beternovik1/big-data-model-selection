@@ -164,10 +164,10 @@ def _epsilon_rows(config: DatasetConfig, root: Path) -> Iterator[NativeRow]:
             for count, raw_line in enumerate(stream, 1):
                 global_ordinal += 1
                 line = raw_line.rstrip("\r\n")
-                tokens = line.split()
-                if len(tokens) != config.feature_count + 1:
-                    raise ValueError(f"{path}:{count}: expected {config.feature_count} LIBSVM features")
-                source_label = tokens[0]
+                parts = line.split(maxsplit=1)
+                if len(parts) != 2 or not parts[1]:
+                    raise ValueError(f"{path}:{count}: expected a label and LIBSVM feature payload")
+                source_label = parts[0]
                 logical = _logical_label(source_label, config)
                 observation_id = f"{source.partition}:{count}"
                 yield NativeRow(
