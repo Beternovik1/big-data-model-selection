@@ -44,3 +44,13 @@ captures/*.pcapng
 .DS_Store
 Thumbs.db
 imgs/
+
+# Ignorar datos y resultados locales
+01_DATA/
+02_RESULTS/
+*.csv
+
+# Ignorar entornos virtuales y caché de Python
+.venv/
+__pycache__/
+*.pyc
