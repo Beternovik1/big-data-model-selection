@@ -29,17 +29,20 @@ Everyone uses the same `validation.csv` and `validation.manifest.csv`. Do not us
 ## Member Workflow
 
 1. Clone the repository.
-2. Switch to `feat/experiment-foundation`.
-3. Create a personal branch named `exp/<member>`.
-4. Download the assigned training sample and the common validation files from Drive.
-5. Do not create another train, validation, or test split.
-6. Train and compare at least two models.
-7. Fit every preprocessing step using training data only.
-8. Evaluate every model on the common validation set.
-9. Record the experiment metrics.
-10. Generate `validation_predictions.csv`.
-11. Push the personal branch to GitHub.
-12. Upload `validation_predictions.csv` to Drive.
+2. git clone git@github.com:Beternovik1/big-data-model-selection.git
+3. cd big-data-model-selection
+4. git switch main
+5. git pull --ff-only origin main
+6. git switch -c exp/<member>
+7. Download the assigned training sample and the common validation files from Drive.
+8. Do not create another train, validation, or test split.
+9. Train and compare at least two models.
+10. Fit every preprocessing step using training data only.
+11. Evaluate every model on the common validation set.
+12. Record the experiment metrics.
+13. Generate `validation_predictions.csv`.
+14. Push the personal branch to GitHub.
+15. Upload `validation_predictions.csv` to Drive.
 
 Create the prediction file with exactly this header:
 
