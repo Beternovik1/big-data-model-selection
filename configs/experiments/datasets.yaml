@@ -1,0 +1,81 @@
+version: 1
+random_state: 42
+team_ids: [edgar, luis, fercho, isaac, caleb, michelle]
+datasets:
+  rlcp:
+    format: nested_zip_csv
+    sources:
+      - path: datasets/raw/rlcp_donation.zip
+        partition: all
+        expected_rows: null
+    output_dir: datasets/processed/rlcp
+    split:
+      strategy: source_blocks
+      train_blocks: [block_1.zip, block_2.zip, block_3.zip, block_4.zip, block_5.zip, block_6.zip, block_7.zip, block_8.zip]
+      validation_blocks: [block_9.zip]
+      internal_test_blocks: [block_10.zip]
+    tiers: [100000, 500000, 1000000]
+    schema:
+      feature_count: 10
+      label_position: last
+      labels: {"TRUE": "TRUE", "FALSE": "FALSE"}
+      columns: [id_1, id_2, cmp_fname_c1, cmp_fname_c2, cmp_lname_c1, cmp_lname_c2, cmp_sex, cmp_bd, cmp_bm, cmp_by, cmp_plz, is_match]
+      block_count: 10
+  kdd:
+    format: gzip_csv
+    sources:
+      - path: datasets/raw/kddcup.data.gz
+        partition: all
+        expected_rows: 4898431
+    output_dir: datasets/processed/kdd
+    split:
+      strategy: duplicate_groups
+      train_ratio: 0.70
+      validation_ratio: 0.15
+      internal_test_ratio: 0.15
+    tiers: [100000, 500000, 1000000]
+    schema:
+      feature_count: 41
+      label_position: last
+      labels: {"normal.": "normal", "*": "attack"}
+      columns: []
+      block_count: null
+  higgs:
+    format: gzip_csv
+    sources:
+      - path: datasets/raw/HIGGS.csv.gz
+        partition: all
+        expected_rows: 11000000
+    output_dir: datasets/processed/higgs
+    split:
+      strategy: tail_test_stratified_validation
+      development_rows: 10500000
+      validation_size: 500000
+      official_test_size: 500000
+    tiers: [200000, 1000000, 3000000]
+    schema:
+      feature_count: 28
+      label_position: first
+      labels: {"0": "0", "1": "1"}
+      columns: []
+      block_count: null
+  epsilon:
+    format: bzip2_libsvm
+    sources:
+      - path: datasets/raw/epsilon_normalized.bz2
+        partition: official_train
+        expected_rows: 400000
+      - path: datasets/raw/epsilon_normalized.t.bz2
+        partition: official_test
+        expected_rows: 100000
+    output_dir: datasets/processed/epsilon
+    split:
+      strategy: official_test_stratified_validation
+      validation_size: 40000
+    tiers: [10000, 30000, 80000]
+    schema:
+      feature_count: 2000
+      label_position: first
+      labels: {"1": "1", "-1": "-1"}
+      columns: []
+      block_count: null
