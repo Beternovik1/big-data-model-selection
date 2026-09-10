@@ -5,9 +5,10 @@ Reproducible preparation and shared evaluation data for the team's classificatio
 ## Quick Start
 
 ```bash
-git clone <repository-url>
-cd bigdata-cluster
-git switch feat/experiment-foundation
+git clone git@github.com:Beternovik1/big-data-model-selection.git
+cd big-data-model-selection
+git switch main
+git pull --ff-only origin main
 git switch -c exp/<member>
 ```
 
